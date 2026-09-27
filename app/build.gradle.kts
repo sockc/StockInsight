@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.tianxian.stockinsight"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.tianxian.stockinsight"
