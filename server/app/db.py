@@ -1,7 +1,7 @@
 import os
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, Float, String, Text, create_engine
+from sqlalchemy import Date, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -41,6 +41,30 @@ class EventReactionRecord(Base):
     reaction_10d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     reaction_20d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     sector_relative_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class MarketSnapshotRecord(Base):
+    """Metadata for the last provider-verified adjusted daily candles."""
+
+    __tablename__ = "market_snapshots"
+
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(40), default="yfinance")
+
+
+class MarketCandleRecord(Base):
+    """Historical daily prices survive provider outages and server restarts."""
+
+    __tablename__ = "market_candles"
+
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    volume: Mapped[int] = mapped_column(Integer)
 
 
 class PolicyExposureRecord(Base):

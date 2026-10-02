@@ -76,7 +76,11 @@ data class BacktestItem(
     val accuracy: Double,
     val highConfidenceTests: Int,
     val highConfidenceAccuracy: Double?,
-    val brierScore: Double?
+    val brierScore: Double?,
+    val baselineAccuracy: Double? = null,
+    val baselineBrierScore: Double? = null,
+    val nonOverlappingTests: Int = 0,
+    val nonOverlappingAccuracy: Double? = null
 )
 
 data class BacktestResponse(

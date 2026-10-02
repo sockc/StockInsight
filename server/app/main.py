@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager, suppress
 from threading import Lock
 
 from cachetools import TTLCache
@@ -8,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from .analysis import analyze, candles
 from .db import init_db
+from .market import bundle
 from .events import event_response
 from .policy import policy_response
 from .schemas import BacktestResponse, EventsResponse, OverviewResponse, PolicyResponse
@@ -15,17 +19,41 @@ from .schemas import BacktestResponse, EventsResponse, OverviewResponse, PolicyR
 
 _analysis_cache: TTLCache = TTLCache(maxsize=16, ttl=600)
 _analysis_lock = Lock()
+logger = logging.getLogger(__name__)
+
+
+async def _refresh_verified_history() -> None:
+    """Request a provider refresh on boot and every 90 minutes thereafter."""
+    while True:
+        try:
+            await asyncio.to_thread(bundle, "ARM")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled verified market refresh failed; cached data retained")
+        await asyncio.sleep(90 * 60)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    refresh_task = (
+        asyncio.create_task(_refresh_verified_history())
+        if os.getenv("MARKET_REFRESH_ENABLED", "1") == "1"
+        else None
+    )
+    try:
+        yield
+    finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
 
 
 app = FastAPI(
     title="StockInsight Analysis Server",
-    version="0.1.0",
+    version="0.15.0",
     description="ARM-first market context, walk-forward backtest, event and policy analysis API.",
     lifespan=lifespan,
 )
@@ -50,14 +78,14 @@ def _analysis(symbol: str) -> tuple[OverviewResponse, BacktestResponse]:
 def root() -> dict:
     return {
         "name": "StockInsight Analysis Server",
-        "version": "0.1.0",
+        "version": "0.15.0",
         "docs": "/docs",
     }
 
 
 @app.get("/api/v1/health")
 def health() -> dict:
-    return {"ok": True, "version": "0.1.0"}
+    return {"ok": True, "version": "0.15.0"}
 
 
 @app.get("/api/v1/stocks/{symbol}/overview", response_model=OverviewResponse)
