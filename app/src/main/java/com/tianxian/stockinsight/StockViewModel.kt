@@ -45,7 +45,8 @@ class StockViewModel(application: Application) : AndroidViewModel(application) {
                 events = events.await(),
                 backtest = backtest.await(),
                 policy = policy.await(),
-                serverUrl = repository.getServerUrl()
+                serverUrl = repository.getServerUrl(),
+                message = if (overview.await() == null) "真实行情暂时不可用，请检查服务器地址或网络。" else null
             )
         }
     }
