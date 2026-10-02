@@ -115,6 +115,7 @@ private fun HomeScreen(overview: OverviewResponse?, message: String?) {
                                 "historical_delayed" -> "历史日线"
                                 "historical_cache" -> "服务器缓存"
                                 "local_cache" -> "本机旧缓存"
+                                "legacy_daily" -> "旧版日线"
                                 else -> "数据状态未知"
                             }) }
                         )

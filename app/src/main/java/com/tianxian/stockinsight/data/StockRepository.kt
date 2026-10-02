@@ -59,6 +59,14 @@ class StockRepository(context: Context) {
             settingsStore.saveVerifiedOverviewJson(gson.toJson(actual))
             return actual
         }
+        if (actual?.dataMode == "live_delayed") {
+            // Upgrade order is flexible: legacy backend values are shown as
+            // historical daily data but never stored as a verified snapshot.
+            return actual.copy(
+                dataMode = "legacy_daily",
+                statusText = "旧版服务端日线，尚未启用数据质量验证 · " + actual.statusText
+            )
+        }
         // Failed calls never manufacture a price or a fabricated model prediction.
         return lastVerifiedOverview()
     }
