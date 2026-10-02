@@ -55,7 +55,7 @@ private fun StockInsightApp(vm: StockViewModel) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("StockInsight 股析", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text("ARM 单股验证版 V0.1", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("ARM 单股验证版 V0.15", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = vm::refresh) { Text("刷新") }
                 }
@@ -79,7 +79,7 @@ private fun StockInsightApp(vm: StockViewModel) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else {
                 when (tab) {
-                    AppTab.HOME -> HomeScreen(state.overview)
+                    AppTab.HOME -> HomeScreen(state.overview, state.message)
                     AppTab.MARKET -> MarketScreen(state.overview)
                     AppTab.EVENTS -> EventsScreen(state.events, state.policy)
                     AppTab.MODEL -> ModelScreen(state.overview, state.backtest)
@@ -94,8 +94,8 @@ private fun StockInsightApp(vm: StockViewModel) {
 }
 
 @Composable
-private fun HomeScreen(overview: OverviewResponse?) {
-    if (overview == null) return
+private fun HomeScreen(overview: OverviewResponse?, message: String?) {
+    if (overview == null) { EmptyState(message ?: "暂无可验证的真实行情，请在设置中连接服务器。"); return }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -111,7 +111,12 @@ private fun HomeScreen(overview: OverviewResponse?) {
                         }
                         AssistChip(
                             onClick = {},
-                            label = { Text(if (overview.dataMode == "demo") "演示数据" else "服务器数据") }
+                            label = { Text(when (overview.dataMode) {
+                                "historical_delayed" -> "历史日线"
+                                "historical_cache" -> "服务器缓存"
+                                "local_cache" -> "本机旧缓存"
+                                else -> "数据状态未知"
+                            }) }
                         )
                     }
                     Text(
@@ -124,7 +129,7 @@ private fun HomeScreen(overview: OverviewResponse?) {
             }
         }
 
-        item { SectionTitle("未来概率 · 同时显示回测有效性") }
+        item { SectionTitle("历史相似样本上涨占比 · 未校准") }
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(overview.predictions) { p -> PredictionCard(p) }
@@ -178,7 +183,7 @@ private fun PredictionCard(item: PredictionHorizon) {
 
 @Composable
 private fun MarketScreen(overview: OverviewResponse?) {
-    if (overview == null) return
+    if (overview == null) { EmptyState("真实市场数据不可用，请在设置中连接服务器。"); return }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -213,6 +218,10 @@ private fun EventsScreen(events: EventsResponse?, policy: PolicyResponse?) {
         item {
             Text("事件与政策", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text("事件本身和事件后的真实市场反应分开记录。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (events == null) item {
+            Text("事件数据暂时不可用；不会用计划中的事件冒充实时新闻。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         events?.items?.let { list ->
             items(list) { event -> EventCard(event) }
@@ -276,20 +285,26 @@ private fun ModelScreen(overview: OverviewResponse?, backtest: BacktestResponse?
                         MetricLine("测试次数", row.tests.toString())
                         MetricLine("高置信样本", row.highConfidenceTests.toString())
                         MetricLine("高置信命中", row.highConfidenceAccuracy?.let { "${one(it)}%" } ?: "--")
-                        MetricLine("Brier", row.brierScore?.let(::three) ?: "--")
+                        MetricLine("模型 Brier", row.brierScore?.let(::three) ?: "--")
+                        MetricLine("历史上涨率基准", row.baselineAccuracy?.let { one(it) + "%" } ?: "--")
+                        MetricLine("基准 Brier", row.baselineBrierScore?.let(::three) ?: "--")
+                        MetricLine("不重叠样本数", row.nonOverlappingTests.toString())
+                        MetricLine("不重叠命中率", row.nonOverlappingAccuracy?.let { one(it) + "%" } ?: "--")
                     }
                 }
             }
         }
         if (backtest != null) item {
             Text(backtest.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else item {
+            Text("当前无法获取真实回测数据。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (overview != null) item {
-            Text("当前概率", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("历史相似样本（未经校准）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         }
         overview?.predictions?.let { predictions ->
             items(predictions) { p ->
-                MetricLine("${p.horizon} 上涨概率", "${one(p.upProbability)}% · 样本外 ${one(p.backtestAccuracy)}%")
+                MetricLine("${p.horizon} 历史上涨占比", "${one(p.upProbability)}% · 样本外 ${one(p.backtestAccuracy)}%")
             }
         }
     }
@@ -305,7 +320,7 @@ private fun SettingsScreen(currentUrl: String, onSave: (String) -> Unit) {
     ) {
         item {
             Text("服务器设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("留空使用演示数据。生产环境建议使用 HTTPS，例如 https://stock.example.com/", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("留空仅显示此前验证过的真实缓存；没有缓存时不显示行情。推荐使用 HTTPS，例如 https://stock.example.com/", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             OutlinedTextField(
@@ -330,6 +345,18 @@ private fun SettingsScreen(currentUrl: String, onSave: (String) -> Unit) {
                     Text("Release APK 由 GitHub Actions 使用固定 JKS 签名。", style = MaterialTheme.typography.bodySmall)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(message: String) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("暂无真实行情", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("切换到底部「设置」检查服务器地址后刷新。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
