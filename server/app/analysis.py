@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from functools import lru_cache
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -25,9 +25,12 @@ def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, np.nan)
-    value = 100 - 100 / (1 + rs)
-    return value.fillna(100.0).clip(0, 100)
+    # Preserve warm-up NaN. Flat prices are neutral, not overbought.
+    value = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    value = value.mask((loss == 0) & (gain > 0), 100.0)
+    value = value.mask((gain == 0) & (loss > 0), 0.0)
+    value = value.mask((gain == 0) & (loss == 0), 50.0)
+    return value.clip(0, 100)
 
 
 def _feature_frame(m: MarketBundle, symbol: str) -> pd.DataFrame:
@@ -104,49 +107,55 @@ def _neighbor_prediction(
 
 def _walk_forward(features: pd.DataFrame, close: pd.Series, horizon: int) -> BacktestItem:
     start = max(180, int(len(features) * 0.46))
-    predictions: list[tuple[float, int]] = []
-
+    # At step i the baseline may only use labels that mature on or before i.
+    predictions: list[tuple[float, int, float]] = []
     for i in range(start, len(features) - horizon):
         pred = _neighbor_prediction(features, close, i, horizon)
         if pred is None:
             continue
         p, _, _ = pred
         actual = int(close.iloc[i + horizon] > close.iloc[i])
-        predictions.append((p, actual))
+        matured = close.iloc[100 + horizon : i + 1].to_numpy() > close.iloc[100 : i - horizon + 1].to_numpy()
+        if len(matured) == 0:
+            continue
+        baseline = float(matured.mean())
+        predictions.append((p, actual, baseline))
 
     if not predictions:
         return BacktestItem(
-            horizon=f"{horizon}D",
-            tests=0,
-            accuracy=0.0,
-            high_confidence_tests=0,
-            high_confidence_accuracy=None,
-            brier_score=None,
+            horizon=f"{horizon}D", tests=0, accuracy=0.0,
+            high_confidence_tests=0, high_confidence_accuracy=None,
+            brier_score=None, baseline_accuracy=None, baseline_brier_score=None,
+            non_overlapping_tests=0, non_overlapping_accuracy=None,
         )
 
-    correct = sum((p >= 0.5) == bool(y) for p, y in predictions)
-    accuracy = correct / len(predictions)
-    brier = sum((p - y) ** 2 for p, y in predictions) / len(predictions)
-    high = [(p, y) for p, y in predictions if p >= 0.60 or p <= 0.40]
-    high_acc = None
-    if high:
-        high_acc = sum((p >= 0.5) == bool(y) for p, y in high) / len(high)
+    correct = sum((p >= 0.5) == bool(y) for p, y, _ in predictions)
+    brier = sum((p - y) ** 2 for p, y, _ in predictions) / len(predictions)
+    baseline_correct = sum((b >= 0.5) == bool(y) for _, y, b in predictions)
+    baseline_brier = sum((b - y) ** 2 for _, y, b in predictions) / len(predictions)
+    high = [(p, y) for p, y, _ in predictions if p >= 0.60 or p <= 0.40]
+    non_overlap = predictions[::horizon]
+    non_overlap_correct = sum((p >= 0.5) == bool(y) for p, y, _ in non_overlap)
 
     return BacktestItem(
-        horizon=f"{horizon}D",
-        tests=len(predictions),
-        accuracy=round(accuracy * 100, 1),
+        horizon=f"{horizon}D", tests=len(predictions),
+        accuracy=round(correct / len(predictions) * 100, 1),
         high_confidence_tests=len(high),
-        high_confidence_accuracy=round(high_acc * 100, 1) if high_acc is not None else None,
+        high_confidence_accuracy=(
+            round(sum((p >= 0.5) == bool(y) for p, y in high) / len(high) * 100, 1)
+            if high else None
+        ),
         brier_score=round(brier, 3),
+        baseline_accuracy=round(baseline_correct / len(predictions) * 100, 1),
+        baseline_brier_score=round(baseline_brier, 3),
+        non_overlapping_tests=len(non_overlap),
+        non_overlapping_accuracy=round(non_overlap_correct / len(non_overlap) * 100, 1),
     )
 
 
 def _confidence(backtest_accuracy: float, tests: int) -> str:
-    if tests >= 250 and backtest_accuracy >= 60:
-        return "high"
-    if tests >= 180 and backtest_accuracy >= 56:
-        return "medium"
+    # A high apparent accuracy is not calibrated probability. Until a
+    # held-out calibration study exists, do not advertise high confidence.
     return "low"
 
 
@@ -223,16 +232,7 @@ def analyze(symbol: str = "ARM") -> tuple[OverviewResponse, BacktestResponse]:
         pred = _neighbor_prediction(features, close, len(features) - 1, horizon)
         bt = backtest_map[horizon]
         if pred is None:
-            predictions.append(
-                PredictionHorizon(
-                    horizon=f"{horizon}D",
-                    up_probability=50.0,
-                    expected_return_pct=0.0,
-                    backtest_accuracy=bt.accuracy,
-                    sample_size=0,
-                    confidence="low",
-                )
-            )
+            # Do not invent 50% or a zero return when observations are insufficient.
             continue
         p, expected, n = pred
         predictions.append(
@@ -250,6 +250,13 @@ def analyze(symbol: str = "ARM") -> tuple[OverviewResponse, BacktestResponse]:
     daily_change = float((close.iloc[-1] / close.iloc[-2] - 1) * 100)
     as_of = close.index[-1].strftime("%Y-%m-%d")
 
+    oldest_fetch = m.fetched_at.isoformat() if m.fetched_at else "unknown"
+    calendar_age = (
+        (datetime.now(timezone.utc).date() - close.index[-1].date()).days
+    )
+    stale_label = " · 行情可能过期" if calendar_age > 5 else ""
+    mode_label = "已验证历史缓存" if m.data_mode == "historical_cache" else "历史日线（非实时）"
+
     overview = OverviewResponse(
         symbol=symbol,
         name=NAMES.get(symbol, symbol),
@@ -257,22 +264,22 @@ def analyze(symbol: str = "ARM") -> tuple[OverviewResponse, BacktestResponse]:
         price=round(price, 2),
         change_pct=round(daily_change, 2),
         as_of=as_of,
-        data_mode="live_delayed",
-        status_text=f"历史日线更新至 {as_of} · yfinance 原型数据源",
+        data_mode=m.data_mode,
+        status_text=f"{mode_label} · 行情截至 {as_of} · 最近采集 {oldest_fetch}{stale_label}",
         predictions=predictions,
         market_context=_market_context(m, symbol),
         technicals=_technical(primary),
         key_levels=_key_levels(primary, price),
         notices=[
-            "V0.1 使用历史日线与相似状态模型，不代表确定性未来结果。",
-            "重点查看样本外命中率；若长期接近50%，概率只作为状态描述，不作为交易信号。",
-            "yfinance 仅用于原型验证，正式版建议更换为有授权/稳定SLA的行情源。",
+            "显示的是历史相似样本上涨比例，未经概率校准，不是未来上涨的可靠概率。",
+            "回测同时提供历史上涨频率基准；多日预测窗口重叠，独立样本数量更少。",
+            "yfinance 为原型日线数据源，不是实时授权行情。",
         ],
     )
     backtest = BacktestResponse(
         symbol=symbol,
         items=backtests,
-        note="Walk-forward：每个历史预测点只使用当时已经可知的数据和已成熟标签，减少未来数据泄漏。",
+        note="逐日扩展回测仅使用当时已成熟的标签；对比同期历史上涨频率基准，并单列不重叠评估。相似样本比例未经校准，样本仍可能相关。",
         data_mode="computed",
     )
     return overview, backtest

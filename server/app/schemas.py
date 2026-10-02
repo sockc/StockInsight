@@ -78,6 +78,10 @@ class BacktestItem(BaseModel):
     high_confidence_tests: int
     high_confidence_accuracy: float | None = None
     brier_score: float | None = None
+    baseline_accuracy: float | None = None
+    baseline_brier_score: float | None = None
+    non_overlapping_tests: int = 0
+    non_overlapping_accuracy: float | None = None
 
 
 class BacktestResponse(BaseModel):
